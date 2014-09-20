@@ -25,7 +25,7 @@ dfTrain <-read.csv('train.csv')
 dfTest <-read.csv('test.csv')
 ```
 <BR><BR>
-Clean up the variables by removing problematic fields, applying KNN imputation, removing overly correlated and near zero variance fields:
+Clean up the variables by removing problematic fields and imputating all NAs with either KNN or 0:
 ```{r}
 # remove index, un-important features, and timestamps
 dfTrain <- subset(dfTrain,select=-c(X, user_name, cvtd_timestamp, raw_timestamp_part_1, raw_timestamp_part_2))
@@ -42,9 +42,46 @@ dfFactors <- as.data.frame(lapply(dfTrain[c(originalFactorVariables)],as.numeric
 dfNumerics <- dfTrain[originalNumericVariables]
 imputedNums <- preProcess(dfNumerics, method=c('knnImpute'))
 dfNumerics <- predict(imputedNums, dfNumerics)
+# rebuild data frame
 dfCleanTrain <- cbind(dfFactors,dfNumerics)
+# remove near zero variance
+zeroVar <- nearZeroVar(dfCleanTrain)
+dfCleanTrain <- dfCleanTrain[-zeroVar]
+# impute any other NAs with 0
+dfCleanTrain[is.na(dfCleanTrain)] <- 0 
 # add the classe variable back to the data set
-dfCleanTrain$classe <- outcomeData    
+dfCleanTrain$classe <- outcomeData 
+```
+<BR><BR>
+Clean up testing data set 
+```{r}
+# clean up test data set
+dfCleanTest <- dfTest[c(intersect(names(dfCleanTrain),names(dfTest)))]
+# get names of numeric data
+originalNumericVariables <- names(dfCleanTest [sapply(dfCleanTest , is.numeric)])
+# get names of factor data
+originalFactorVariables <- names(dfCleanTest [sapply(dfCleanTest , is.logical)])
+# binarize all numerical factors to numericals
+dfFactors <- as.data.frame(lapply(dfCleanTest [c(originalFactorVariables)],as.numeric))
+# impute numerics with nearest knn
+dfNumerics <- dfCleanTest[originalNumericVariables]
+imputedNums <- preProcess(dfNumerics, method=c('knnImpute'))
+dfNumerics <- predict(imputedNums, dfNumerics)
+# rebuild data frame
+dfCleanTest <- cbind(dfFactors,dfNumerics)
+# impute any other NAs with 0
+dfCleanTest[is.na(dfCleanTest)] <- 0 
+# remove near zero variance
+zeroVar <- nearZeroVar(dfCleanTest)
+dfCleanTest <- dfCleanTest[-zeroVar]
+```
+<BR><BR>
+Balance out both data sets to only use mutually inclusive features
+```{r}
+# balance both train and test datasets
+predictors <- intersect(names(dfCleanTrain),names(dfCleanTest))
+dfCleanTrain <- dfCleanTrain[c(predictors, 'classe')]
+dfCleanTest <- dfCleanTest[c(predictors)]
 ```
 <BR><BR>
 Shuffle the data...
@@ -54,15 +91,15 @@ set.seed(1234)
 dfCleanTrain <- dfCleanTrain[sample(nrow(dfCleanTrain)),]
 ```
 <BR><BR>
-With the training data set in a cleaned and ready state, we now model the entire data set with a <b>multinomial</b> model which can handle predicting multiple classes at a time, not just two. We also only use top 100 variables to accelerate modeling.
+With the training data set in a cleaned and ready state, we now model the entire data set with a <b>multinomial</b> model which can handle predicting multiple classes at a time, not just two.
 ```{recho=TRUE}
 library(nnet)
-model = multinom(classe~.,data=dfCleanTrain, maxit=500, trace=F)
-# Get top 100 best variables
+model = multinom(classe~.,data=dfCleanTrain, maxit=1000, trace=F)
+# Order top influential variables
 topModels <- varImp(model)
 topModels$Variables <- row.names(topModels)
 topModels <- topModels[order(-topModels$Overall),]
-topVariables <- head(topModels,100)$Variables
+topVariables <- head(topModels,120)$Variables
 ```
 <BR><BR>
 Here is the list of the top 10 variables ranked as most important by the varImp function:
@@ -70,7 +107,7 @@ Here is the list of the top 10 variables ranked as most important by the varImp 
 print(head(topVariables,10))
 ```
 <BR><BR>
-We now cross-validate the <b>multinomial</b> model using a different 5th of the training data set as a test data set to get an more correct average error and accuracy score.
+We now cross-validate the <b>multinomial</b> model using a different portion of the training data set as a test data set to get an more correct average error and accuracy score.
 ```{r}
 f <- paste('classe ~ ',paste0(topVariables,collapse=' + '))
 # cross validate cv times
@@ -90,7 +127,7 @@ for (cv in seq(1:cv)) {
    dataTest <- dfCleanTrain[dataTestIndex,]
    # everything else to train
    dataTrain <- dfCleanTrain[-dataTestIndex,]
-   objModel <- multinom(as.formula(f),data=dataTrain, maxit=500, trace=F)
+   objModel <- multinom(as.formula(f),data=dataTrain, maxit=1000, trace=F)
    preds <- predict(objModel, type="class", newdata=dataTest)
    err <- ce(as.numeric(dataTest$classe), as.numeric(preds))
    totalError <- c(totalError, err)
@@ -102,18 +139,16 @@ The accuracy of the model is found using postResample and returns:
 ```{r}
 print(mean(totalAccuracy))
 ```
+<BR><BR>
 The error rate derived from the accuracy minus 1 (or directly from the metrics package function: ce):
 ```{r}
 print(mean(totalError))
 ```
-Finally we use the real test data set to predict the 20 cases using our model. We first must apply the top 100 variables to the testing data set so that the training and testing sets are on the same page:
+<BR><BR>
+Finally we use the real test data set to predict the 20 cases using our model:
 ```{r}
 f <- paste('classe ~ ',paste0(topVariables,collapse=' + '))
-objModel <- multinom(as.formula(f), data=dfCleanTrain, maxit=500, trace=F)
-dfCleanTest <- dfTest[c(intersect(names(dfCleanTrain),names(dfTest)))]
-dfCleanTest$new_window <- as.numeric(dfCleanTest$new_window)
-# impute all NAs to 0
-dfCleanTest[is.na(dfCleanTest)] <- 0 
+objModel <- multinom(as.formula(f), data=dfCleanTrain, maxit=1000)
 preds <- predict(objModel, type="class", newdata=dfCleanTest)
 preds
 ```

@@ -217,7 +217,7 @@ dfTest &lt;- read.csv(&quot;test.csv&quot;)
 </code></pre>
 
 <p><BR><BR>
-Clean up the variables by removing problematic fields, applying KNN imputation, removing overly correlated and near zero variance fields:</p>
+Clean up the variables by removing problematic fields and imputating all NAs with either KNN or 0:</p>
 
 <pre><code class="r"># remove index, un-important features, and timestamps
 dfTrain &lt;- subset(dfTrain, select = -c(X, user_name, cvtd_timestamp, raw_timestamp_part_1, 
@@ -235,9 +235,48 @@ dfFactors &lt;- as.data.frame(lapply(dfTrain[c(originalFactorVariables)], as.num
 dfNumerics &lt;- dfTrain[originalNumericVariables]
 imputedNums &lt;- preProcess(dfNumerics, method = c(&quot;knnImpute&quot;))
 dfNumerics &lt;- predict(imputedNums, dfNumerics)
+# rebuild data frame
 dfCleanTrain &lt;- cbind(dfFactors, dfNumerics)
+# remove near zero variance
+zeroVar &lt;- nearZeroVar(dfCleanTrain)
+dfCleanTrain &lt;- dfCleanTrain[-zeroVar]
+# impute any other NAs with 0
+dfCleanTrain[is.na(dfCleanTrain)] &lt;- 0
 # add the classe variable back to the data set
 dfCleanTrain$classe &lt;- outcomeData
+</code></pre>
+
+<p><BR><BR>
+Clean up testing data set </p>
+
+<pre><code class="r"># clean up test data set
+dfCleanTest &lt;- dfTest[c(intersect(names(dfCleanTrain), names(dfTest)))]
+# get names of numeric data
+originalNumericVariables &lt;- names(dfCleanTest[sapply(dfCleanTest, is.numeric)])
+# get names of factor data
+originalFactorVariables &lt;- names(dfCleanTest[sapply(dfCleanTest, is.logical)])
+# binarize all numerical factors to numericals
+dfFactors &lt;- as.data.frame(lapply(dfCleanTest[c(originalFactorVariables)], as.numeric))
+# impute numerics with nearest knn
+dfNumerics &lt;- dfCleanTest[originalNumericVariables]
+imputedNums &lt;- preProcess(dfNumerics, method = c(&quot;knnImpute&quot;))
+dfNumerics &lt;- predict(imputedNums, dfNumerics)
+# rebuild data frame
+dfCleanTest &lt;- cbind(dfFactors, dfNumerics)
+# impute any other NAs with 0
+dfCleanTest[is.na(dfCleanTest)] &lt;- 0
+# remove near zero variance
+zeroVar &lt;- nearZeroVar(dfCleanTest)
+dfCleanTest &lt;- dfCleanTest[-zeroVar]
+</code></pre>
+
+<p><BR><BR>
+Balance out both data sets to only use mutually inclusive features</p>
+
+<pre><code class="r"># balance both train and test datasets
+predictors &lt;- intersect(names(dfCleanTrain), names(dfCleanTest))
+dfCleanTrain &lt;- dfCleanTrain[c(predictors, &quot;classe&quot;)]
+dfCleanTest &lt;- dfCleanTest[c(predictors)]
 </code></pre>
 
 <p><BR><BR>
@@ -249,15 +288,15 @@ dfCleanTrain &lt;- dfCleanTrain[sample(nrow(dfCleanTrain)), ]
 </code></pre>
 
 <p><BR><BR>
-With the training data set in a cleaned and ready state, we now model the entire data set with a <b>multinomial</b> model which can handle predicting multiple classes at a time, not just two. We also only use top 100 variables to accelerate modeling.</p>
+With the training data set in a cleaned and ready state, we now model the entire data set with a <b>multinomial</b> model which can handle predicting multiple classes at a time, not just two.</p>
 
 <pre><code class="r">library(nnet)
-model = multinom(classe ~ ., data = dfCleanTrain, maxit = 500, trace = F)
-# Get top 100 best variables
+model = multinom(classe ~ ., data = dfCleanTrain, maxit = 1000, trace = F)
+# Order top influential variables
 topModels &lt;- varImp(model)
 topModels$Variables &lt;- row.names(topModels)
 topModels &lt;- topModels[order(-topModels$Overall), ]
-topVariables &lt;- head(topModels, 100)$Variables
+topVariables &lt;- head(topModels, 120)$Variables
 </code></pre>
 
 <p><BR><BR>
@@ -266,15 +305,14 @@ Here is the list of the top 10 variables ranked as most important by the varImp 
 <pre><code class="r">print(head(topVariables, 10))
 </code></pre>
 
-<pre><code>##  [1] &quot;avg_yaw_belt&quot;           &quot;min_roll_belt&quot;         
-##  [3] &quot;max_roll_belt&quot;          &quot;stddev_yaw_belt&quot;       
-##  [5] &quot;max_roll_forearm&quot;       &quot;amplitude_roll_forearm&quot;
-##  [7] &quot;amplitude_roll_belt&quot;    &quot;var_yaw_belt&quot;          
-##  [9] &quot;min_roll_forearm&quot;       &quot;roll_belt&quot;
+<pre><code>##  [1] &quot;yaw_belt&quot;          &quot;roll_belt&quot;         &quot;pitch_belt&quot;       
+##  [4] &quot;magnet_dumbbell_z&quot; &quot;magnet_belt_z&quot;     &quot;magnet_arm_z&quot;     
+##  [7] &quot;accel_belt_z&quot;      &quot;accel_arm_z&quot;       &quot;magnet_dumbbell_x&quot;
+## [10] &quot;magnet_dumbbell_y&quot;
 </code></pre>
 
 <p><BR><BR>
-We now cross-validate the <b>multinomial</b> model using a different 5th of the training data set as a test data set to get an more correct average error and accuracy score.</p>
+We now cross-validate the <b>multinomial</b> model using a different portion of the training data set as a test data set to get an more correct average error and accuracy score.</p>
 
 <pre><code class="r">f &lt;- paste(&quot;classe ~ &quot;, paste0(topVariables, collapse = &quot; + &quot;))
 # cross validate cv times
@@ -293,7 +331,7 @@ for (cv in seq(1:cv)) {
     dataTest &lt;- dfCleanTrain[dataTestIndex, ]
     # everything else to train
     dataTrain &lt;- dfCleanTrain[-dataTestIndex, ]
-    objModel &lt;- multinom(as.formula(f), data = dataTrain, maxit = 500, trace = F)
+    objModel &lt;- multinom(as.formula(f), data = dataTrain, maxit = 1000, trace = F)
     preds &lt;- predict(objModel, type = &quot;class&quot;, newdata = dataTest)
     err &lt;- ce(as.numeric(dataTest$classe), as.numeric(preds))
     totalError &lt;- c(totalError, err)
@@ -307,30 +345,62 @@ The accuracy of the model is found using postResample and returns:</p>
 <pre><code class="r">print(mean(totalAccuracy))
 </code></pre>
 
-<pre><code>## [1] 0.8199
+<pre><code>## [1] 0.7471
 </code></pre>
 
-<p>The error rate derived from the accuracy minus 1 (or directly from the metrics package function: ce):</p>
+<p><BR><BR>
+The error rate derived from the accuracy minus 1 (or directly from the metrics package function: ce):</p>
 
 <pre><code class="r">print(mean(totalError))
 </code></pre>
 
-<pre><code>## [1] 0.1801
+<pre><code>## [1] 0.2529
 </code></pre>
 
-<p>Finally we use the real test data set to predict the 20 cases using our model. We first must apply the top 100 variables to the testing data set so that the training and testing sets are on the same page:</p>
+<p><BR><BR>
+Finally we use the real test data set to predict the 20 cases using our model:</p>
 
 <pre><code class="r">f &lt;- paste(&quot;classe ~ &quot;, paste0(topVariables, collapse = &quot; + &quot;))
-objModel &lt;- multinom(as.formula(f), data = dfCleanTrain, maxit = 500, trace = F)
-dfCleanTest &lt;- dfTest[c(intersect(names(dfCleanTrain), names(dfTest)))]
-dfCleanTest$new_window &lt;- as.numeric(dfCleanTest$new_window)
-# impute all NAs to 0
-dfCleanTest[is.na(dfCleanTest)] &lt;- 0
-preds &lt;- predict(objModel, type = &quot;class&quot;, newdata = dfCleanTest)
+objModel &lt;- multinom(as.formula(f), data = dfCleanTrain, maxit = 1000)
+</code></pre>
+
+<pre><code>## # weights:  275 (216 variable)
+## initial  value 31580.390718 
+## iter  10 value 22200.713920
+## iter  20 value 19859.805716
+## iter  30 value 18608.659746
+## iter  40 value 17911.799810
+## iter  50 value 17509.020539
+## iter  60 value 16820.756778
+## iter  70 value 15611.111940
+## iter  80 value 14834.548165
+## iter  90 value 14187.707443
+## iter 100 value 13894.123783
+## iter 110 value 13753.009687
+## iter 120 value 13557.017079
+## iter 130 value 13369.396716
+## iter 140 value 13266.247995
+## iter 150 value 13212.667029
+## iter 160 value 13183.985695
+## iter 170 value 13165.528062
+## iter 180 value 13159.059592
+## iter 190 value 13157.600624
+## iter 200 value 13157.215013
+## iter 210 value 13157.135004
+## iter 220 value 13157.082552
+## iter 230 value 13157.031470
+## iter 240 value 13157.017313
+## iter 240 value 13157.017248
+## iter 240 value 13157.017247
+## final  value 13157.017247 
+## converged
+</code></pre>
+
+<pre><code class="r">preds &lt;- predict(objModel, type = &quot;class&quot;, newdata = dfCleanTest)
 preds
 </code></pre>
 
-<pre><code>##  [1] B A A A A C C C A A A A B A C A A B B A
+<pre><code>##  [1] A B B A A E D B B A D C B A B A A B A B
 ## Levels: A B C D E
 </code></pre>
 

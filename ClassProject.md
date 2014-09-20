@@ -42,7 +42,7 @@ dfTest <- read.csv("test.csv")
 ```
 
 <BR><BR>
-Clean up the variables by removing problematic fields, applying KNN imputation, removing overly correlated and near zero variance fields:
+Clean up the variables by removing problematic fields and imputating all NAs with either KNN or 0:
 
 ```r
 # remove index, un-important features, and timestamps
@@ -61,9 +61,50 @@ dfFactors <- as.data.frame(lapply(dfTrain[c(originalFactorVariables)], as.numeri
 dfNumerics <- dfTrain[originalNumericVariables]
 imputedNums <- preProcess(dfNumerics, method = c("knnImpute"))
 dfNumerics <- predict(imputedNums, dfNumerics)
+# rebuild data frame
 dfCleanTrain <- cbind(dfFactors, dfNumerics)
+# remove near zero variance
+zeroVar <- nearZeroVar(dfCleanTrain)
+dfCleanTrain <- dfCleanTrain[-zeroVar]
+# impute any other NAs with 0
+dfCleanTrain[is.na(dfCleanTrain)] <- 0
 # add the classe variable back to the data set
 dfCleanTrain$classe <- outcomeData
+```
+
+<BR><BR>
+Clean up testing data set 
+
+```r
+# clean up test data set
+dfCleanTest <- dfTest[c(intersect(names(dfCleanTrain), names(dfTest)))]
+# get names of numeric data
+originalNumericVariables <- names(dfCleanTest[sapply(dfCleanTest, is.numeric)])
+# get names of factor data
+originalFactorVariables <- names(dfCleanTest[sapply(dfCleanTest, is.logical)])
+# binarize all numerical factors to numericals
+dfFactors <- as.data.frame(lapply(dfCleanTest[c(originalFactorVariables)], as.numeric))
+# impute numerics with nearest knn
+dfNumerics <- dfCleanTest[originalNumericVariables]
+imputedNums <- preProcess(dfNumerics, method = c("knnImpute"))
+dfNumerics <- predict(imputedNums, dfNumerics)
+# rebuild data frame
+dfCleanTest <- cbind(dfFactors, dfNumerics)
+# impute any other NAs with 0
+dfCleanTest[is.na(dfCleanTest)] <- 0
+# remove near zero variance
+zeroVar <- nearZeroVar(dfCleanTest)
+dfCleanTest <- dfCleanTest[-zeroVar]
+```
+
+<BR><BR>
+Balance out both data sets to only use mutually inclusive features
+
+```r
+# balance both train and test datasets
+predictors <- intersect(names(dfCleanTrain), names(dfCleanTest))
+dfCleanTrain <- dfCleanTrain[c(predictors, "classe")]
+dfCleanTest <- dfCleanTest[c(predictors)]
 ```
 
 <BR><BR>
@@ -76,16 +117,16 @@ dfCleanTrain <- dfCleanTrain[sample(nrow(dfCleanTrain)), ]
 ```
 
 <BR><BR>
-With the training data set in a cleaned and ready state, we now model the entire data set with a <b>multinomial</b> model which can handle predicting multiple classes at a time, not just two. We also only use top 100 variables to accelerate modeling.
+With the training data set in a cleaned and ready state, we now model the entire data set with a <b>multinomial</b> model which can handle predicting multiple classes at a time, not just two.
 
 ```r
 library(nnet)
-model = multinom(classe ~ ., data = dfCleanTrain, maxit = 500, trace = F)
-# Get top 100 best variables
+model = multinom(classe ~ ., data = dfCleanTrain, maxit = 1000, trace = F)
+# Order top influential variables
 topModels <- varImp(model)
 topModels$Variables <- row.names(topModels)
 topModels <- topModels[order(-topModels$Overall), ]
-topVariables <- head(topModels, 100)$Variables
+topVariables <- head(topModels, 120)$Variables
 ```
 
 <BR><BR>
@@ -96,15 +137,14 @@ print(head(topVariables, 10))
 ```
 
 ```
-##  [1] "avg_yaw_belt"           "min_roll_belt"         
-##  [3] "max_roll_belt"          "stddev_yaw_belt"       
-##  [5] "max_roll_forearm"       "amplitude_roll_forearm"
-##  [7] "amplitude_roll_belt"    "var_yaw_belt"          
-##  [9] "min_roll_forearm"       "roll_belt"
+##  [1] "yaw_belt"          "roll_belt"         "pitch_belt"       
+##  [4] "magnet_dumbbell_z" "magnet_belt_z"     "magnet_arm_z"     
+##  [7] "accel_belt_z"      "accel_arm_z"       "magnet_dumbbell_x"
+## [10] "magnet_dumbbell_y"
 ```
 
 <BR><BR>
-We now cross-validate the <b>multinomial</b> model using a different 5th of the training data set as a test data set to get an more correct average error and accuracy score.
+We now cross-validate the <b>multinomial</b> model using a different portion of the training data set as a test data set to get an more correct average error and accuracy score.
 
 ```r
 f <- paste("classe ~ ", paste0(topVariables, collapse = " + "))
@@ -124,7 +164,7 @@ for (cv in seq(1:cv)) {
     dataTest <- dfCleanTrain[dataTestIndex, ]
     # everything else to train
     dataTrain <- dfCleanTrain[-dataTestIndex, ]
-    objModel <- multinom(as.formula(f), data = dataTrain, maxit = 500, trace = F)
+    objModel <- multinom(as.formula(f), data = dataTrain, maxit = 1000, trace = F)
     preds <- predict(objModel, type = "class", newdata = dataTest)
     err <- ce(as.numeric(dataTest$classe), as.numeric(preds))
     totalError <- c(totalError, err)
@@ -140,9 +180,10 @@ print(mean(totalAccuracy))
 ```
 
 ```
-## [1] 0.8199
+## [1] 0.7471
 ```
 
+<BR><BR>
 The error rate derived from the accuracy minus 1 (or directly from the metrics package function: ce):
 
 ```r
@@ -150,24 +191,57 @@ print(mean(totalError))
 ```
 
 ```
-## [1] 0.1801
+## [1] 0.2529
 ```
 
-Finally we use the real test data set to predict the 20 cases using our model. We first must apply the top 100 variables to the testing data set so that the training and testing sets are on the same page:
+<BR><BR>
+Finally we use the real test data set to predict the 20 cases using our model:
 
 ```r
 f <- paste("classe ~ ", paste0(topVariables, collapse = " + "))
-objModel <- multinom(as.formula(f), data = dfCleanTrain, maxit = 500, trace = F)
-dfCleanTest <- dfTest[c(intersect(names(dfCleanTrain), names(dfTest)))]
-dfCleanTest$new_window <- as.numeric(dfCleanTest$new_window)
-# impute all NAs to 0
-dfCleanTest[is.na(dfCleanTest)] <- 0
+objModel <- multinom(as.formula(f), data = dfCleanTrain, maxit = 1000)
+```
+
+```
+## # weights:  275 (216 variable)
+## initial  value 31580.390718 
+## iter  10 value 22200.713920
+## iter  20 value 19859.805716
+## iter  30 value 18608.659746
+## iter  40 value 17911.799810
+## iter  50 value 17509.020539
+## iter  60 value 16820.756778
+## iter  70 value 15611.111940
+## iter  80 value 14834.548165
+## iter  90 value 14187.707443
+## iter 100 value 13894.123783
+## iter 110 value 13753.009687
+## iter 120 value 13557.017079
+## iter 130 value 13369.396716
+## iter 140 value 13266.247995
+## iter 150 value 13212.667029
+## iter 160 value 13183.985695
+## iter 170 value 13165.528062
+## iter 180 value 13159.059592
+## iter 190 value 13157.600624
+## iter 200 value 13157.215013
+## iter 210 value 13157.135004
+## iter 220 value 13157.082552
+## iter 230 value 13157.031470
+## iter 240 value 13157.017313
+## iter 240 value 13157.017248
+## iter 240 value 13157.017247
+## final  value 13157.017247 
+## converged
+```
+
+```r
 preds <- predict(objModel, type = "class", newdata = dfCleanTest)
 preds
 ```
 
 ```
-##  [1] B A A A A C C C A A A A B A C A A B B A
+##  [1] A B B A A E D B B A D C B A B A A B A B
 ## Levels: A B C D E
 ```
 
